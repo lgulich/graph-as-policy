@@ -20,8 +20,10 @@ from gap_core.tools._registry import RpcAdapter
 from gap.runtime.shared_tool_metrics import _mode_map
 from gap.runtime.shared_tool_owner import (
     _kill_server_group,
-    _parser as owner_parser,
     _server_command,
+)
+from gap.runtime.shared_tool_owner import (
+    _parser as owner_parser,
 )
 from gap.runtime.tool_bundle_boot import (
     boot_tool_bundles,
