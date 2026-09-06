@@ -296,7 +296,7 @@ def test_shared_owners_validate_per_bundle_execution_modes(monkeypatch, tmp_path
         ToolRegistry(),
         shared_socket_dir=tmp_path / "sockets",
         execution_mode="serialized",
-        execution_modes={"sam3": "batched"},
+        execution_modes={"sam3": "batched", "curobo": "serialized"},
         session_id="arena-env-9",
         episode_id="episode-2",
     )
@@ -312,6 +312,34 @@ def test_shared_owners_validate_per_bundle_execution_modes(monkeypatch, tmp_path
             item.episode_id == "episode-3"
             for item in (manager._managed["sam3"].client, manager._managed["curobo"].client)
         )
+    finally:
+        manager.shutdown_all()
+
+
+def test_explicit_shared_bundle_modes_leave_other_rpc_bundles_private(
+    monkeypatch, fake_client_cls, tmp_path
+):
+    _FakeSharedToolClient.ready_calls.clear()
+    monkeypatch.setattr("gap_core.rpc.shared.SharedToolClient", _FakeSharedToolClient)
+    skill_registry = _FakeSkillRegistry(
+        {
+            "geometry": _FakeSkillInfo(bundle_dir=tmp_path / "geometry"),
+            "sam3": _FakeSkillInfo(bundle_dir=tmp_path / "sam3"),
+        }
+    )
+    manager = ToolBundleManager(
+        skill_registry,
+        ToolRegistry(),
+        shared_socket_dir=tmp_path / "sockets",
+        execution_modes={"sam3": "serialized"},
+    )
+
+    manager.boot_all(["geometry", "sam3"])
+    try:
+        assert [call["bundle_name"] for call in _FakeSharedToolClient.ready_calls] == [
+            "sam3"
+        ]
+        assert [client.bundle_name for client in fake_client_cls] == ["geometry"]
     finally:
         manager.shutdown_all()
 

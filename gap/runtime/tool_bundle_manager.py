@@ -168,7 +168,10 @@ class ToolBundleManager:
                     continue
                 logger.info("[tool-bundle:%s] booting", name)
                 try:
-                    if self._shared_socket_dir is not None:
+                    use_shared_owner = self._shared_socket_dir is not None and (
+                        not self._execution_modes or name in self._execution_modes
+                    )
+                    if use_shared_owner:
                         from gap_core.rpc.shared import SharedToolClient
 
                         socket_path = self._shared_socket_dir / f"{name}.sock"
