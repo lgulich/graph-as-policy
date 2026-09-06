@@ -18,8 +18,11 @@ from gap_core.tools import ToolRegistry
 from gap_core.tools._registry import RpcAdapter
 
 from gap.runtime.shared_tool_metrics import _mode_map
-from gap.runtime.shared_tool_owner import _parser as owner_parser
-from gap.runtime.shared_tool_owner import _server_command
+from gap.runtime.shared_tool_owner import (
+    _kill_server_group,
+    _parser as owner_parser,
+    _server_command,
+)
 from gap.runtime.tool_bundle_boot import (
     boot_tool_bundles,
     required_rpc_tool_bundles,
@@ -196,6 +199,21 @@ def test_shared_owner_command_carries_bundle_mode_and_limits(tmp_path):
         "--max-wait-ms",
         "10.0",
     ]
+
+
+def test_shared_owner_kills_server_group_without_sigterm(monkeypatch):
+    events = []
+    process = SimpleNamespace(pid=1234, wait=lambda timeout: events.append(("wait", timeout)))
+    monkeypatch.setattr("gap.runtime.shared_tool_owner.os.getpgid", lambda pid: 5678)
+    monkeypatch.setattr("gap.runtime.shared_tool_owner.os.getpgrp", lambda: 9999)
+    monkeypatch.setattr(
+        "gap.runtime.shared_tool_owner.os.killpg",
+        lambda pgid, sig: events.append(("killpg", pgid, sig)),
+    )
+
+    _kill_server_group(process)
+
+    assert events == [("killpg", 5678, 9), ("wait", 5.0)]
 
 
 @pytest.fixture

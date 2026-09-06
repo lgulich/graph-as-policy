@@ -11,10 +11,36 @@ import sys
 import time
 from pathlib import Path
 
-from gap_core.rpc.client import ToolClientError, _terminate_group
+from gap_core.rpc.client import ToolClientError
 from gap_core.rpc.shared import SharedToolClient
 
 logger = logging.getLogger(__name__)
+
+
+def _kill_server_group(process: subprocess.Popen) -> None:
+    """Unconditionally kill a shared server group without native handlers.
+
+    Some heavyweight GPU bundles load native libraries that replace SIGTERM
+    handlers and fault while tearing down worker threads.  Shared owners are
+    stopped only after clients close and metrics are captured, so a direct
+    SIGKILL is the reliable process-lifecycle boundary here.
+    """
+    try:
+        process_group = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    if process_group <= 1 or process_group == os.getpgrp():
+        raise RuntimeError(f"refusing to kill unsafe process group {process_group}")
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "shared tool server pid=%d did not exit after SIGKILL", process.pid
+        )
 
 
 def _server_command(args: argparse.Namespace, socket_path: Path) -> list[str]:
@@ -83,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     def _stop(_signum, _frame) -> None:
         nonlocal stopping
         stopping = True
-        _terminate_group(process, args.shutdown_grace_s)
+        _kill_server_group(process)
 
     previous_term = signal.signal(signal.SIGTERM, _stop)
     previous_int = signal.signal(signal.SIGINT, _stop)
@@ -121,12 +147,13 @@ def main(argv: list[str] | None = None) -> int:
                 f"shared tool owner was not ready within {args.startup_timeout_s:.1f}s: "
                 f"{last_error}"
             )
-        return process.wait()
+        return_code = process.wait()
+        return 0 if stopping else return_code
     finally:
         signal.signal(signal.SIGTERM, previous_term)
         signal.signal(signal.SIGINT, previous_int)
         if process.poll() is None and not stopping:
-            _terminate_group(process, args.shutdown_grace_s)
+            _kill_server_group(process)
 
 
 if __name__ == "__main__":
