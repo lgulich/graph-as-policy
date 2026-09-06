@@ -259,6 +259,25 @@ class Workflow:
     conditional_edges: dict[str, ConditionalEdge]
     subgraphs: dict[str, SubgraphDef]
     workflow_dir: Path                           # for resolving script paths
+    requires_tools: tuple[str, ...] = ()
+    """Flat tool names this workflow's SCRIPT nodes call, declared by the author.
+
+    Tool bundles are booted from what the workflow *shows*: a ``type: tool``
+    node names one directly, and a subgraph naming a skill contributes that
+    bundle's ``allowed_tools``. Neither sees inside a script, and a subgraph
+    labelled ``generic`` names no skill at all -- so a graph whose whole
+    perception layer is its own scripts calling ``sam3.segment_text`` boots
+    nothing and fails at the first call with "not found".
+
+    That is not hypothetical. Relabelling a graph's four perception subgraphs
+    ``generic`` -- correct, because they ran no bundle script -- silently
+    stopped its vision body booting the segmenter it had always used. The
+    dishonest labels had been doing load-bearing work.
+
+    So an author can say it outright. This is a declaration of need, not of
+    provenance: it changes which bundles boot and nothing else, and a name here
+    that no script calls costs one subprocess.
+    """
 
     def begin_targets(self) -> list[str]:
         """Nodes that START fans out to."""
@@ -272,6 +291,8 @@ class Workflow:
 
 _WORKFLOW_KEYS = frozenset({
     "version", "meta", "nodes", "edges", "conditional_edges", "subgraphs",
+    # {"tools": ["sam3.segment_text", ...]} -- see Workflow.requires_tools.
+    "requires",
 })
 _SUBGRAPH_KEYS = frozenset({
     "skill", "agent", "inputs", "outputs",
@@ -369,6 +390,8 @@ def _parse_workflow(raw: dict, workflow_dir: Path) -> Workflow:
             )
         subgraphs[sg_name] = _parse_subgraph(sg_name, sg_raw)
 
+    requires_tools = _parse_requires(raw.get("requires", {}))
+
     return Workflow(
         version=version,
         meta=meta,
@@ -377,7 +400,21 @@ def _parse_workflow(raw: dict, workflow_dir: Path) -> Workflow:
         conditional_edges=conditional_edges,
         subgraphs=subgraphs,
         workflow_dir=workflow_dir,
+        requires_tools=requires_tools,
     )
+
+
+def _parse_requires(raw: object) -> tuple[str, ...]:
+    """``requires: {tools: [...]}`` -- the tool names a script node calls."""
+    if not raw:
+        return ()
+    if not isinstance(raw, dict):
+        raise WorkflowValidationError("workflow.requires must be an object")
+    _check_keys(raw, frozenset({"tools"}), "workflow.requires")
+    tools = raw.get("tools", [])
+    if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+        raise WorkflowValidationError("workflow.requires.tools must be a list of strings")
+    return tuple(tools)
 
 
 def _parse_subgraph(name: str, raw: dict) -> SubgraphDef:

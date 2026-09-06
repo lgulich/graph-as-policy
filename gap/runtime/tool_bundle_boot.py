@@ -10,6 +10,10 @@ from two sources:
    nodes — so a workflow's `target_sg` subgraph referencing a
    ``perceiving-objects-multiview`` skill must pre-boot every bundle that
    skill's ``allowed_tools`` declares (sam3, grounding-dino, vlm, …).
+3. The workflow's own ``requires.tools``. Neither source above sees inside
+   a script, and a subgraph labelled ``generic`` names no skill to ask —
+   so a graph whose perception layer is its own scripts had no way to say
+   what it calls, and booted nothing. See ``Workflow.requires_tools``.
 
 A bundle whose SKILL.md declares ``gap.serving.protocol == "stdio-msgpack"``
 is booted out-of-process via :class:`ToolBundleManager`. Bundles without a
@@ -44,7 +48,7 @@ def required_rpc_tool_bundles(
     except Exception:
         return out
 
-    candidate_tool_names: set[str] = set()
+    candidate_tool_names: set[str] = set(getattr(wf, "requires_tools", ()) or ())
     candidate_skills: set[str] = set()
     for sg in wf.subgraphs.values():
         # Skill that owns this subgraph contributes its allowed_tools — script
