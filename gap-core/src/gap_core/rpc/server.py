@@ -38,18 +38,18 @@ from .codec import FrameError, decode_frame, write_frame
 logger = logging.getLogger(__name__)
 
 
-def _shutdown_shared_server(shared_server) -> None:
-    """Stop socket workers and exit without running model finalizers.
+def _shutdown_shared_server(_shared_server) -> None:
+    """Exit a signal-driven shared server without native finalization.
 
     Several GPU tool stacks install native communication libraries whose
     interpreter-shutdown handlers are not safe after CUDA model teardown.
-    The shared owner has already snapshotted metrics and closed its clients
-    before signalling this process, so finish the RPC shutdown and bypass
-    Python/C-extension finalization.  This is deliberately limited to the
-    signal-driven shared-server process; normal in-process server tests still
-    return from :meth:`SharedToolServer.serve_forever` normally.
+    The shared owner is signalled only after metrics are snapshotted and graph
+    clients are closed, so do not acquire Python locks or join native worker
+    threads from the signal handler.  Process exit closes the sockets; the
+    owner removes its private socket directory.  This is deliberately limited
+    to the signal-driven shared-server process; normal in-process server tests
+    still close :class:`SharedToolServer` normally.
     """
-    shared_server.close()
     os._exit(0)
 
 

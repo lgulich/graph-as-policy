@@ -20,7 +20,7 @@ _MAX_ACTIVE_SCALAR_CALLS = 0
 _SCALAR_LOCK = threading.Lock()
 
 
-def test_signal_shutdown_closes_server_before_hard_exit(monkeypatch):
+def test_signal_shutdown_hard_exits_without_touching_server(monkeypatch):
     events: list[object] = []
 
     class _Server:
@@ -30,7 +30,7 @@ def test_signal_shutdown_closes_server_before_hard_exit(monkeypatch):
     monkeypatch.setattr(rpc_server.os, "_exit", lambda code: events.append(code))
     rpc_server._shutdown_shared_server(_Server())
 
-    assert events == ["closed", 0]
+    assert events == [0]
 
 
 def test_queue_wait_metrics_use_observed_denominator_and_bounded_p95_sample():
