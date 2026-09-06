@@ -38,6 +38,21 @@ from .codec import FrameError, decode_frame, write_frame
 logger = logging.getLogger(__name__)
 
 
+def _shutdown_shared_server(shared_server) -> None:
+    """Stop socket workers and exit without running model finalizers.
+
+    Several GPU tool stacks install native communication libraries whose
+    interpreter-shutdown handlers are not safe after CUDA model teardown.
+    The shared owner has already snapshotted metrics and closed its clients
+    before signalling this process, so finish the RPC shutdown and bypass
+    Python/C-extension finalization.  This is deliberately limited to the
+    signal-driven shared-server process; normal in-process server tests still
+    return from :meth:`SharedToolServer.serve_forever` normally.
+    """
+    shared_server.close()
+    os._exit(0)
+
+
 def _isolate_framing_stdout() -> io.BufferedWriter:
     """Move the msgpack frame channel off the shared stdout fd.
 
@@ -314,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         def _stop_shared_server(_signum, _frame) -> None:
-            shared_server.close()
+            _shutdown_shared_server(shared_server)
 
         signal.signal(signal.SIGTERM, _stop_shared_server)
         signal.signal(signal.SIGINT, _stop_shared_server)

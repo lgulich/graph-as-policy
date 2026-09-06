@@ -8,6 +8,7 @@ from typing import TypedDict
 
 import pytest
 
+from gap_core.rpc import server as rpc_server
 from gap_core.rpc.client import ToolCallTimeout, ToolClientError, ToolRemoteError
 from gap_core.rpc.shared import SharedToolClient, SharedToolServer, _Metrics
 from gap_core.tools import ToolRegistry, tool, tool_batch
@@ -17,6 +18,19 @@ _SCALAR_CALLS = 0
 _ACTIVE_SCALAR_CALLS = 0
 _MAX_ACTIVE_SCALAR_CALLS = 0
 _SCALAR_LOCK = threading.Lock()
+
+
+def test_signal_shutdown_closes_server_before_hard_exit(monkeypatch):
+    events: list[object] = []
+
+    class _Server:
+        def close(self) -> None:
+            events.append("closed")
+
+    monkeypatch.setattr(rpc_server.os, "_exit", lambda code: events.append(code))
+    rpc_server._shutdown_shared_server(_Server())
+
+    assert events == ["closed", 0]
 
 
 def test_queue_wait_metrics_use_observed_denominator_and_bounded_p95_sample():
