@@ -205,7 +205,7 @@ def test_shared_owner_command_carries_bundle_mode_and_limits(tmp_path):
 
 def test_shared_owner_kills_server_group_without_sigterm(monkeypatch):
     events = []
-    process = SimpleNamespace(pid=1234, wait=lambda timeout: events.append(("wait", timeout)))
+    process = SimpleNamespace(pid=1234)
     monkeypatch.setattr("gap.runtime.shared_tool_owner.os.getpgid", lambda pid: 5678)
     monkeypatch.setattr("gap.runtime.shared_tool_owner.os.getpgrp", lambda: 9999)
     monkeypatch.setattr(
@@ -215,7 +215,7 @@ def test_shared_owner_kills_server_group_without_sigterm(monkeypatch):
 
     _kill_server_group(process)
 
-    assert events == [("killpg", 5678, 9), ("wait", 5.0)]
+    assert events == [("killpg", 5678, 9)]
 
 
 @pytest.fixture

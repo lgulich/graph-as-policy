@@ -35,12 +35,6 @@ def _kill_server_group(process: subprocess.Popen) -> None:
         os.killpg(process_group, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    try:
-        process.wait(timeout=5.0)
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            "shared tool server pid=%d did not exit after SIGKILL", process.pid
-        )
 
 
 def _server_command(args: argparse.Namespace, socket_path: Path) -> list[str]:
