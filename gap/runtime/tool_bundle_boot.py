@@ -21,6 +21,7 @@ exactly as today.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 
 def required_rpc_tool_bundles(
-    workflow_dir: str | Path, skill_registry: Any,
+    workflow_dir: str | Path,
+    skill_registry: Any,
 ) -> set[str]:
     """Bundle names a workflow references whose serving.protocol is
     ``stdio-msgpack``."""
@@ -85,6 +87,11 @@ def boot_tool_bundles(
     *,
     startup_timeout_s: float = 60.0,
     evict_grace_s: float = 5.0,
+    shared_socket_dir: str | Path | None = None,
+    execution_mode: str | None = None,
+    execution_modes: Mapping[str, str] | None = None,
+    session_id: str | None = None,
+    episode_id: str | None = None,
 ) -> Any | None:
     """Boot every RPC tool bundle the workflow needs.
 
@@ -104,6 +111,11 @@ def boot_tool_bundles(
         tool_registry=tool_registry,
         startup_timeout_s=startup_timeout_s,
         evict_grace_s=evict_grace_s,
+        shared_socket_dir=shared_socket_dir,
+        execution_mode=execution_mode,
+        execution_modes=execution_modes,
+        session_id=session_id,
+        episode_id=episode_id,
     )
     manager.boot_all(required)
     return manager

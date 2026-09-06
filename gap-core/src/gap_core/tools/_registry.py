@@ -51,12 +51,12 @@ class Adapter(Protocol):
 class ToolDescriptor:
     """Registry entry for one tool — same shape regardless of origin."""
 
-    name: str                                 # canonical name; what the LLM emits
-    summary: str                              # one-line description for prompts
-    schema: UnitSchema                        # introspected I/O for the LLM
-    transport: ToolTransport = "python"       # which adapter dispatches
-    scope: ToolScope = "runtime"              # runtime vs codegen
-    tags: tuple[str, ...] = ()                # for harness filtering + guard limits
+    name: str  # canonical name; what the LLM emits
+    summary: str  # one-line description for prompts
+    schema: UnitSchema  # introspected I/O for the LLM
+    transport: ToolTransport = "python"  # which adapter dispatches
+    scope: ToolScope = "runtime"  # runtime vs codegen
+    tags: tuple[str, ...] = ()  # for harness filtering + guard limits
     metadata: dict[str, Any] = field(default_factory=dict)
     """Adapter-specific metadata: ``{module: str, qualname: str,
     requires_ctx: bool}``. ``requires_ctx`` indicates ctx-injection."""
@@ -73,6 +73,18 @@ _PENDING_TOOLS: list[dict[str, Any]] = []
 # that calls discover_pending(), so registries built after the first drain
 # (fresh connectors, the sequential benchmark path) still get bundle tools.
 _DRAINED_TOOLS: list[dict[str, Any]] = []
+_PENDING_BATCH_HANDLERS: list[dict[str, Any]] = []
+_DRAINED_BATCH_HANDLERS: list[dict[str, Any]] = []
+
+
+@dataclass(frozen=True)
+class ToolBatching:
+    """Private serving contract for a dynamically batched scalar tool."""
+
+    handler: Callable[[list[dict[str, Any]]], list[Any]]
+    max_batch_size: int = 8
+    max_wait_ms: float = 5.0
+    compatibility_key: Callable[[dict[str, Any]], Any] | None = None
 
 
 def tool(
@@ -113,14 +125,50 @@ def tool(
         )
 
     def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
-        _PENDING_TOOLS.append({
-            "name": name,
-            "summary": summary,
-            "scope": scope,
-            "tags": tuple(tags),
-            "fn": fn,
-        })
+        _PENDING_TOOLS.append(
+            {
+                "name": name,
+                "summary": summary,
+                "scope": scope,
+                "tags": tuple(tags),
+                "fn": fn,
+            }
+        )
         return fn
+
+    return _wrap
+
+
+def tool_batch(
+    *,
+    name: str,
+    max_batch_size: int = 8,
+    max_wait_ms: float = 5.0,
+    compatibility_key: Callable[[dict[str, Any]], Any] | None = None,
+) -> Callable[[Callable[[list[dict[str, Any]]], list[Any]]], Callable[..., Any]]:
+    """Declare an optional private batch handler for an existing scalar tool.
+
+    The handler receives scalar keyword-argument mappings and must return one
+    result (or exception instance) per input, in the same order. Graphs and
+    skills continue to call the scalar tool interface.
+    """
+    if max_batch_size < 1:
+        raise ValueError("max_batch_size must be positive")
+    if max_wait_ms < 0:
+        raise ValueError("max_wait_ms must be non-negative")
+
+    def _wrap(fn: Callable[[list[dict[str, Any]]], list[Any]]) -> Callable[..., Any]:
+        _PENDING_BATCH_HANDLERS.append(
+            {
+                "name": name,
+                "handler": fn,
+                "max_batch_size": int(max_batch_size),
+                "max_wait_ms": float(max_wait_ms),
+                "compatibility_key": compatibility_key,
+            }
+        )
+        return fn
+
     return _wrap
 
 
@@ -205,6 +253,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolDescriptor] = {}
+        self._batching: dict[str, ToolBatching] = {}
         self.python_adapter = PythonAdapter()
         self.rpc_adapter = RpcAdapter()
 
@@ -221,7 +270,9 @@ class ToolRegistry:
         self._discover_python(python_tools_dir)
 
     def discover_pending(
-        self, *, catalog: list[dict[str, Any]] | None = None,
+        self,
+        *,
+        catalog: list[dict[str, Any]] | None = None,
     ) -> None:
         """Drain pending registrations (the @tool decorator pushes there).
 
@@ -242,8 +293,11 @@ class ToolRegistry:
         if catalog is not None:
             for entry in catalog:
                 self._register_python(
-                    entry["name"], entry["summary"],
-                    entry["scope"], entry["tags"], entry["fn"],
+                    entry["name"],
+                    entry["summary"],
+                    entry["scope"],
+                    entry["tags"],
+                    entry["fn"],
                 )
         # Replay the process-global drained catalog: the pending queue is
         # one-shot per import, so a registry built AFTER another registry
@@ -256,18 +310,64 @@ class ToolRegistry:
             if entry["name"] in self:
                 continue
             self._register_python(
-                entry["name"], entry["summary"],
-                entry["scope"], entry["tags"], entry["fn"],
+                entry["name"],
+                entry["summary"],
+                entry["scope"],
+                entry["tags"],
+                entry["fn"],
             )
         while _PENDING_TOOLS:
             entry = _PENDING_TOOLS.pop(0)
             _DRAINED_TOOLS.append(entry)
             self._register_python(
-                entry["name"], entry["summary"],
-                entry["scope"], entry["tags"], entry["fn"],
+                entry["name"],
+                entry["summary"],
+                entry["scope"],
+                entry["tags"],
+                entry["fn"],
             )
             if catalog is not None:
                 catalog.append(entry)
+        for entry in _DRAINED_BATCH_HANDLERS:
+            if entry["name"] not in self._batching:
+                self._register_batch(entry)
+        while _PENDING_BATCH_HANDLERS:
+            entry = _PENDING_BATCH_HANDLERS.pop(0)
+            _DRAINED_BATCH_HANDLERS.append(entry)
+            self._register_batch(entry)
+
+    def _register_batch(self, entry: dict[str, Any]) -> None:
+        name = entry["name"]
+        if name not in self._tools:
+            raise ValueError(f"batch handler references unknown tool {name!r}")
+        if name in self._batching:
+            existing = self._batching[name]
+            if existing.handler is entry["handler"]:
+                return
+            raise ValueError(f"batch handler already registered for tool {name!r}")
+        self._batching[name] = ToolBatching(
+            handler=entry["handler"],
+            max_batch_size=entry["max_batch_size"],
+            max_wait_ms=entry["max_wait_ms"],
+            compatibility_key=entry.get("compatibility_key"),
+        )
+
+    def batching(self, name: str) -> ToolBatching | None:
+        """Return the private serving policy for *name*, if batch-capable."""
+        return self._batching.get(name)
+
+    def invoke_batch(self, name: str, requests: list[dict[str, Any]]) -> list[Any]:
+        """Invoke a registered private batch handler."""
+        batching = self._batching.get(name)
+        if batching is None:
+            raise KeyError(f"tool {name!r} has no batch handler")
+        results = batching.handler(requests)
+        if len(results) != len(requests):
+            raise ValueError(
+                f"batch handler for {name!r} returned {len(results)} results "
+                f"for {len(requests)} requests"
+            )
+        return results
 
     def register_callable(
         self,
@@ -298,8 +398,13 @@ class ToolRegistry:
         if name in self._tools:
             raise ValueError(f"Tool name collision: {name!r} already registered")
         self._register_python(
-            name, summary, scope, tuple(tags), fn,
-            requires_ctx=requires_ctx, allow_reserved=True,
+            name,
+            summary,
+            scope,
+            tuple(tags),
+            fn,
+            requires_ctx=requires_ctx,
+            allow_reserved=True,
         )
 
     def _discover_python(self, root: Path) -> None:
@@ -351,13 +456,17 @@ class ToolRegistry:
             )
         if name in self._tools:
             existing = self._tools[name]
-            if existing.transport == "python" and existing.metadata.get("qualname") == fn.__qualname__:
+            if (
+                existing.transport == "python"
+                and existing.metadata.get("qualname") == fn.__qualname__
+            ):
                 return  # idempotent re-import
             raise ValueError(f"Tool name collision: {name!r} already registered")
 
         # Build a fake module for extract_schema: it expects ``module.run`` and
         # ``module._meta``. Wrap the function so the same machinery applies.
         from types import SimpleNamespace
+
         wrapper = SimpleNamespace(
             run=fn,
             _meta=None,
@@ -462,8 +571,9 @@ class ToolRegistry:
                 **(metadata or {}),
             },
         )
-        logger.debug("Registered rpc tool %r (bundle=%s)", name,
-                     getattr(client, "bundle_name", "?"))
+        logger.debug(
+            "Registered rpc tool %r (bundle=%s)", name, getattr(client, "bundle_name", "?")
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -10,4 +10,5 @@ Public surface:
     from gap_core.rpc.client import ToolClient
     from gap_core.rpc.server import main as tool_server_main
     from gap_core.rpc.codec import encode_frame, decode_frame
+    from gap_core.rpc.shared import SharedToolClient, SharedToolServer
 """

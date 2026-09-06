@@ -29,6 +29,7 @@ import msgpack_numpy as _msgpack_numpy
 _msgpack_numpy.patch()
 
 _LEN_HEADER = struct.Struct(">I")  # 4-byte big-endian unsigned length
+DEFAULT_MAX_FRAME_BYTES = 256 * 1024 * 1024
 
 
 class FrameError(RuntimeError):
@@ -42,7 +43,9 @@ def encode_frame(payload: dict[str, Any]) -> bytes:
     return _LEN_HEADER.pack(len(body)) + body
 
 
-def decode_frame(stream: IO[bytes]) -> dict[str, Any] | None:
+def decode_frame(
+    stream: IO[bytes], *, max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES
+) -> dict[str, Any] | None:
     """Read one frame off ``stream``; return ``None`` at clean EOF.
 
     Raises :class:`FrameError` on partial reads (stream closed mid-frame)
@@ -55,30 +58,35 @@ def decode_frame(stream: IO[bytes]) -> dict[str, Any] | None:
         return None
     if len(header) != _LEN_HEADER.size:
         raise FrameError(
-            f"short read on length header: got {len(header)} bytes, "
-            f"expected {_LEN_HEADER.size}"
+            f"short read on length header: got {len(header)} bytes, expected {_LEN_HEADER.size}"
         )
     (length,) = _LEN_HEADER.unpack(header)
+    if length > max_frame_bytes:
+        raise FrameError(f"frame body is {length} bytes, exceeds limit {max_frame_bytes}")
     body = stream.read(length)
     if len(body) != length:
-        raise FrameError(
-            f"short read on body: got {len(body)} bytes, expected {length}"
-        )
+        raise FrameError(f"short read on body: got {len(body)} bytes, expected {length}")
     try:
         obj = msgpack.unpackb(body, raw=False)
     except Exception as exc:
         raise FrameError(f"msgpack decode failed: {exc}") from exc
     if not isinstance(obj, dict):
-        raise FrameError(
-            f"frame payload must be a mapping, got {type(obj).__name__}"
-        )
+        raise FrameError(f"frame payload must be a mapping, got {type(obj).__name__}")
     return obj
 
 
-def write_frame(stream: IO[bytes], payload: dict[str, Any]) -> None:
+def write_frame(stream: IO[bytes], payload: dict[str, Any]) -> int:
     """Encode + write + flush. The flush is what makes the RPC interactive."""
-    stream.write(encode_frame(payload))
+    encoded = encode_frame(payload)
+    stream.write(encoded)
     stream.flush()
+    return len(encoded)
 
 
-__all__ = ["FrameError", "decode_frame", "encode_frame", "write_frame"]
+__all__ = [
+    "DEFAULT_MAX_FRAME_BYTES",
+    "FrameError",
+    "decode_frame",
+    "encode_frame",
+    "write_frame",
+]

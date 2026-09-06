@@ -26,17 +26,21 @@ from __future__ import annotations
 from ._registry import (
     RESERVED_TOOL_PREFIXES,
     Adapter,
+    ToolBatching,
     ToolDescriptor,
     ToolRegistry,
     default_tool_registry,
     tool,
+    tool_batch,
 )
 
 __all__ = [
     "RESERVED_TOOL_PREFIXES",
     "Adapter",
     "ToolDescriptor",
+    "ToolBatching",
     "ToolRegistry",
     "default_tool_registry",
     "tool",
+    "tool_batch",
 ]

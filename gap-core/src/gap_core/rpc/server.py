@@ -28,6 +28,7 @@ import importlib
 import io
 import logging
 import os
+import signal
 import sys
 import traceback
 from typing import Any
@@ -70,29 +71,31 @@ def _build_catalog(registry) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for name, desc in registry.runtime_tools().items():
         schema = desc.schema
-        out.append({
-            "name": name,
-            "summary": desc.summary,
-            "tags": list(desc.tags),
-            "metadata": dict(desc.metadata),
-            # Schema is a UnitSchema(inputs={name: FieldInfo}, outputs={...})
-            # — flatten each FieldInfo to a plain dict so msgpack can carry it.
-            "schema": {
-                "inputs": {
-                    fname: {
-                        "name": f.name,
-                        "type_str": f.type_str,
-                        "required": f.required,
-                        "default": _to_plain(f.default),
-                    }
-                    for fname, f in schema.inputs.items()
+        out.append(
+            {
+                "name": name,
+                "summary": desc.summary,
+                "tags": list(desc.tags),
+                "metadata": dict(desc.metadata),
+                # Schema is a UnitSchema(inputs={name: FieldInfo}, outputs={...})
+                # — flatten each FieldInfo to a plain dict so msgpack can carry it.
+                "schema": {
+                    "inputs": {
+                        fname: {
+                            "name": f.name,
+                            "type_str": f.type_str,
+                            "required": f.required,
+                            "default": _to_plain(f.default),
+                        }
+                        for fname, f in schema.inputs.items()
+                    },
+                    "outputs": {
+                        fname: {"name": f.name, "type_str": f.type_str}
+                        for fname, f in schema.outputs.items()
+                    },
                 },
-                "outputs": {
-                    fname: {"name": f.name, "type_str": f.type_str}
-                    for fname, f in schema.outputs.items()
-                },
-            },
-        })
+            }
+        )
     return out
 
 
@@ -122,6 +125,7 @@ def _import_bundle_tools(bundle_name: str) -> None:
     """
     import os
     from types import ModuleType
+
     cwd = os.getcwd()
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
@@ -149,15 +153,16 @@ def _import_bundle_tools(bundle_name: str) -> None:
     # the bundle's source code expects.
     bundle_basename = os.path.basename(cwd)
     parent_basename = os.path.basename(os.path.dirname(cwd))
-    namespace_seg = parent_basename if parent_basename in ("tools", "skills", "policies") else "tools"
+    namespace_seg = (
+        parent_basename if parent_basename in ("tools", "skills", "policies") else "tools"
+    )
     _synth(f"gap_skills.{namespace_seg}.{bundle_basename}", cwd)
 
     try:
         importlib.import_module("tools")
     except ModuleNotFoundError as exc:
         raise SystemExit(
-            f"gap_tool_server[{bundle_name}]: bundle has no `tools.py` in "
-            f"cwd={cwd!r} ({exc})"
+            f"gap_tool_server[{bundle_name}]: bundle has no `tools.py` in cwd={cwd!r} ({exc})"
         ) from exc
 
 
@@ -167,9 +172,7 @@ def _drain_registry():
     from gap_core.tools._registry import _PENDING_TOOLS  # type: ignore
 
     if not _PENDING_TOOLS:
-        raise SystemExit(
-            "gap_tool_server: importing tools.py registered no @tool functions"
-        )
+        raise SystemExit("gap_tool_server: importing tools.py registered no @tool functions")
     reg = ToolRegistry()
     reg.discover_pending()
     return reg
@@ -191,36 +194,48 @@ def _serve(registry, stdin, stdout) -> int:
         fid = str(frame.get("id", ""))
         kind = frame.get("kind")
         if kind != "call":
-            write_frame(stdout, {
-                "id": fid, "kind": "error",
-                "error": {
-                    "type": "ProtocolError",
-                    "message": f"unexpected frame kind {kind!r}",
+            write_frame(
+                stdout,
+                {
+                    "id": fid,
+                    "kind": "error",
+                    "error": {
+                        "type": "ProtocolError",
+                        "message": f"unexpected frame kind {kind!r}",
+                    },
                 },
-            })
+            )
             continue
         name = str(frame.get("tool", ""))
         args = frame.get("args") or {}
         if not isinstance(args, dict):
-            write_frame(stdout, {
-                "id": fid, "kind": "error",
-                "error": {
-                    "type": "ProtocolError",
-                    "message": f"args must be a mapping, got {type(args).__name__}",
+            write_frame(
+                stdout,
+                {
+                    "id": fid,
+                    "kind": "error",
+                    "error": {
+                        "type": "ProtocolError",
+                        "message": f"args must be a mapping, got {type(args).__name__}",
+                    },
                 },
-            })
+            )
             continue
         try:
             result = registry.invoke(name, None, **{str(k): v for k, v in args.items()})
         except BaseException as exc:
-            write_frame(stdout, {
-                "id": fid, "kind": "error",
-                "error": {
-                    "type": type(exc).__name__,
-                    "message": str(exc),
-                    "traceback": traceback.format_exc(),
+            write_frame(
+                stdout,
+                {
+                    "id": fid,
+                    "kind": "error",
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                        "traceback": traceback.format_exc(),
+                    },
                 },
-            })
+            )
             continue
         write_frame(stdout, {"id": fid, "kind": "result", "result": result})
 
@@ -233,24 +248,78 @@ def main(argv: list[str] | None = None) -> int:
             "(in cwd) and dispatches @tool calls over stdio msgpack frames."
         ),
     )
-    parser.add_argument("--bundle", required=True,
-                        help="Bundle name (for log labels)")
-    parser.add_argument("--log-level", default="WARNING",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--bundle", required=True, help="Bundle name (for log labels)")
+    parser.add_argument(
+        "--log-level", default="WARNING", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+    )
+    parser.add_argument(
+        "--socket",
+        help="Serve multiple local clients over this Unix socket instead of stdio",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("serialized", "batched"),
+        default=os.environ.get("GAP_TOOL_EXECUTION_MODE", "serialized"),
+        help="Shared-server execution mode (default: serialized)",
+    )
+    parser.add_argument(
+        "--max-queue-size",
+        type=int,
+        default=int(os.environ.get("GAP_TOOL_MAX_QUEUE_SIZE", "64")),
+    )
+    parser.add_argument(
+        "--max-batch-size",
+        type=int,
+        default=(
+            int(os.environ["GAP_TOOL_MAX_BATCH_SIZE"])
+            if os.environ.get("GAP_TOOL_MAX_BATCH_SIZE")
+            else None
+        ),
+    )
+    parser.add_argument(
+        "--max-wait-ms",
+        type=float,
+        default=(
+            float(os.environ["GAP_TOOL_MAX_WAIT_MS"])
+            if os.environ.get("GAP_TOOL_MAX_WAIT_MS")
+            else None
+        ),
+    )
     args = parser.parse_args(argv)
 
-    # Isolate the frame channel BEFORE importing the bundle — bundle import
-    # is exactly when CUDA / Warp / CuRobo print their init banners to stdout.
-    framing_out = _isolate_framing_stdout()
+    framing_out = None
+    if not args.socket:
+        # Isolate the frame channel BEFORE importing the bundle — bundle import
+        # is exactly when CUDA / Warp / CuRobo print their init banners to stdout.
+        framing_out = _isolate_framing_stdout()
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format=f"%(asctime)s [%(levelname)s] gap_tool_server[{args.bundle}]: "
-               f"%(message)s",
+        format=f"%(asctime)s [%(levelname)s] gap_tool_server[{args.bundle}]: %(message)s",
     )
 
     _import_bundle_tools(args.bundle)
     registry = _drain_registry()
+    if args.socket:
+        from .shared import SharedToolServer
+
+        shared_server = SharedToolServer(
+            registry,
+            args.socket,
+            mode=args.mode,
+            max_queue_size=args.max_queue_size,
+            max_batch_size=args.max_batch_size,
+            max_wait_ms=args.max_wait_ms,
+            bundle_name=args.bundle,
+        )
+
+        def _stop_shared_server(_signum, _frame) -> None:
+            shared_server.close()
+
+        signal.signal(signal.SIGTERM, _stop_shared_server)
+        signal.signal(signal.SIGINT, _stop_shared_server)
+        shared_server.serve_forever()
+        return 0
     # stdin stays raw binary for framing; stdout frames go over the isolated fd.
     return _serve(registry, sys.stdin.buffer, framing_out)
 

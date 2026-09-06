@@ -154,6 +154,8 @@ dev = [
 
 [project.scripts]
 gap = "gap.cli:main"
+gap-tool-owner = "gap.runtime.shared_tool_owner:main"
+gap-tool-metrics = "gap.runtime.shared_tool_metrics:main"
 
 [project.urls]
 Homepage = "https://github.com/graph-robots/graph-as-policy"

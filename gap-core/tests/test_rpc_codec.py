@@ -21,14 +21,19 @@ def _roundtrip(payload):
 
 
 def test_roundtrip_basic_dict():
-    payload = {"id": "req-1", "kind": "call", "tool": "sam3.segment",
-               "args": {"prompt": "the red mug", "threshold": 0.5}}
+    payload = {
+        "id": "req-1",
+        "kind": "call",
+        "tool": "sam3.segment",
+        "args": {"prompt": "the red mug", "threshold": 0.5},
+    }
     assert _roundtrip(payload) == payload
 
 
 def test_roundtrip_numpy_array():
     payload = {
-        "id": "req-2", "kind": "result",
+        "id": "req-2",
+        "kind": "result",
         "result": {
             "mask": np.ones((4, 8), dtype=np.uint8),
             "score": 0.93,
@@ -47,11 +52,18 @@ def test_roundtrip_numpy_array():
 
 def test_roundtrip_nested_structure():
     payload = {
-        "id": "hs-0", "kind": "catalog",
+        "id": "hs-0",
+        "kind": "catalog",
         "tools": [
-            {"name": "geometry.compute_obb", "summary": "...", "tags": ["geom"],
-             "schema": {"inputs": {"points": {"type_str": "ndarray"}},
-                        "outputs": {"obb": {"type_str": "OrientedBoundingBox"}}}},
+            {
+                "name": "geometry.compute_obb",
+                "summary": "...",
+                "tags": ["geom"],
+                "schema": {
+                    "inputs": {"points": {"type_str": "ndarray"}},
+                    "outputs": {"obb": {"type_str": "OrientedBoundingBox"}},
+                },
+            },
         ],
     }
     decoded = _roundtrip(payload)
@@ -75,11 +87,20 @@ def test_decode_truncated_body_raises():
         decode_frame(io.BytesIO(b"\x00\x00\x03\xe7" + b"abc"))
 
 
+def test_decode_rejects_oversized_frame_before_reading_body():
+    stream = io.BytesIO(b"\x00\x00\x01\x00")
+    with pytest.raises(FrameError, match="exceeds limit 64"):
+        decode_frame(stream, max_frame_bytes=64)
+    assert stream.tell() == 4
+
+
 def test_decode_non_mapping_payload_raises():
     """Frames MUST be dicts — a top-level list would mask routing fields."""
     import msgpack
+
     body = msgpack.packb([1, 2, 3], use_bin_type=True)
     import struct
+
     framed = struct.pack(">I", len(body)) + body
     with pytest.raises(FrameError, match="must be a mapping"):
         decode_frame(io.BytesIO(framed))
@@ -89,6 +110,7 @@ def test_decode_garbage_payload_raises():
     """Bytes that aren't valid msgpack must surface a decode error rather
     than silently returning None."""
     import struct
+
     framed = struct.pack(">I", 3) + b"\xc1\xc1\xc1"  # \xc1 is reserved
     with pytest.raises(FrameError, match="msgpack decode"):
         decode_frame(io.BytesIO(framed))
@@ -106,8 +128,9 @@ def test_write_frame_flushes():
             super().flush()
 
     stream = _Stream()
-    write_frame(stream, {"id": "x", "kind": "ping"})
+    written = write_frame(stream, {"id": "x", "kind": "ping"})
     assert stream.flushed >= 1
+    assert written == len(stream.getvalue())
     stream.seek(0)
     assert decode_frame(stream) == {"id": "x", "kind": "ping"}
 
